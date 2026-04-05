@@ -5,13 +5,19 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import anthropic
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from .config_resolver import ConfigResolverError
 from .pipeline import PipelineService
 from .project_store import ProjectStore, ProjectStoreError
-from .schemas import GenerateRequest, GenerationResponse, ProcessRequest, UploadResponse
+from .schemas import (
+    GenerateRequest,
+    GenerationResponse,
+    ProcessRequest,
+    UploadResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +51,16 @@ def _save_uploaded_file(
         tmp_path = Path(tmp.name)
 
     try:
-        saved = state.store.save_upload(project_id, "working/uploads", tmp_path, file.filename or upload_kind)
-        project_relative_path = state.store.rel_to_project(project_id, saved)
+        filename = file.filename or upload_kind
+        saved = state.store.save_upload(
+            project_id, "working/uploads", tmp_path, filename
+        )
+        rel = state.store.rel_to_project(project_id, saved)
         return UploadResponse(
-            path=project_relative_path,
-            url=f"{state.app_base_url}/projects/{project_id}/files/{project_relative_path}",
+            path=rel,
+            url=(
+                f"{state.app_base_url}/projects/{project_id}/files/{rel}"
+            ),
         )
     except ProjectStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -63,10 +74,14 @@ def list_projects(state: AppState = Depends(get_state)) -> dict:
 
 
 @router.get("/projects/{project_id}")
-def get_project(project_id: str, state: AppState = Depends(get_state)) -> dict:
+def get_project(
+    project_id: str, state: AppState = Depends(get_state)
+) -> dict:
     try:
         state.store.ensure_layout(project_id)
-        article = state.store.load_article(project_id).model_dump(mode="json", exclude_none=True)
+        article = state.store.load_article(project_id).model_dump(
+            mode="json", exclude_none=True
+        )
         manifest = state.store.load_generation_manifest(project_id).model_dump(
             mode="json", exclude_none=True
         )
@@ -98,6 +113,11 @@ def generate_project(
             project_id,
             script_prompt_override=payload.script_prompt,
         )
+    except anthropic.AuthenticationError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Anthropic API key. Set ANTHROPIC_API_KEY correctly.",
+        ) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ConfigResolverError as exc:
@@ -123,7 +143,9 @@ def process_project(
     state: AppState = Depends(get_state),
 ) -> GenerationResponse:
     try:
-        processed = state.pipeline.process_manuscript(project_id, payload.manuscript)
+        processed = state.pipeline.process_manuscript(
+            project_id, payload.manuscript
+        )
     except ProjectStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ConfigResolverError as exc:
@@ -143,7 +165,9 @@ def upload_image(
     file: UploadFile = File(...),
     state: AppState = Depends(get_state),
 ) -> UploadResponse:
-    return _save_uploaded_file(state=state, project_id=project_id, file=file, upload_kind="image")
+    return _save_uploaded_file(
+        state=state, project_id=project_id, file=file, upload_kind="image"
+    )
 
 
 @router.post("/projects/{project_id}/upload-audio", response_model=UploadResponse)
@@ -152,11 +176,15 @@ def upload_audio(
     file: UploadFile = File(...),
     state: AppState = Depends(get_state),
 ) -> UploadResponse:
-    return _save_uploaded_file(state=state, project_id=project_id, file=file, upload_kind="audio")
+    return _save_uploaded_file(
+        state=state, project_id=project_id, file=file, upload_kind="audio"
+    )
 
 
 @router.get("/projects/{project_id}/article")
-def get_project_article(project_id: str, state: AppState = Depends(get_state)) -> dict:
+def get_project_article(
+    project_id: str, state: AppState = Depends(get_state)
+) -> dict:
     try:
         article = state.store.load_article(project_id)
         return article.model_dump(mode="json", exclude_none=True)
